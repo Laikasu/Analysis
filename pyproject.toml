@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "analysis"
+version = "0.1.0"
+description = "Reusable model package for analysis"
+authors = [{ name = "Casper", email = "c.f.d.ly@student.tue.nl" }]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["tifffile", "numpy", "pyyaml", "scikit-image", "matplotlib"]
+
+[tool.setuptools]
+packages = ["analysis"]  # list all root scripts
