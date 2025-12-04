@@ -15,8 +15,10 @@ filepath = filedialog.askopenfilename(
 data, metadata = al.load_measurement(filepath)
 peaks = al.identify_peaks(filepath)
 
-wavelendata = metadata['Laser.wavelength [nm]']
-wavelens = np.linspace(wavelendata['Start'], wavelendata['Stop'], wavelendata['Number'])
+wavelens = np.linspace(
+    metadata['Laser.wavelength [nm]']['Start'],
+    metadata['Laser.wavelength [nm]']['Stop'],
+    metadata['Laser.wavelength [nm]']['Number'])
 
 fig, ax = plt.subplots(figsize=(8, 5))
 
