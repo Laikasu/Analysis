@@ -1,0 +1,17 @@
+# Analysis
+
+## Overview  
+**Analysis** is a python package designed to load and analyse data collected using the experiment-control-software.
+
+## Features  
+- Effortlessly load in processed data
+- Find peaks through a GUI
+
+## Installation
+```bash
+pip install git+https://github.com/Laikasu/analysis.git
+```
+
+## Usage
+Two functions are provided: load_measurement and identify_peaks.
+Examples can be found under usage_examples.
