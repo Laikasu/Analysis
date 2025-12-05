@@ -13,19 +13,17 @@ pip install git+https://github.com/Laikasu/analysis.git
 ```
 
 ## Usage
-Two functions are provided: load_measurement and identify_peaks.
+An object is provided: ISCATDataProcessor, which contains useful functions and the data structures.
 ```
-import analysis as al
-data, metadata = al.load_measurement(filepath)
-peaks = al.identify_peaks(filepath)
-```
-
-The metadata is a dictionary. To see the available keys you can look at the metadata file.
-
-```
-import analysis as al
-data, metadata = al.load_measurement(filepath)
-peaks = al.identify_peaks(filepath)
+from analysis import ISCATDataProcessor
+data = ISCATDataProcessor(filepath)
+raw_data = data.raw()
+peaks = data.peaks()
+images = data.images
+background = data.background
+wavelens = data.wavelen()
+defocus = data.defocus()
+roi_size = data.roi_size()
 ```
 
 Examples can be found under usage_examples.

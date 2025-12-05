@@ -1,29 +1,20 @@
-import tkinter as tk
-from tkinter import filedialog
-import os
-
+import sys
 import matplotlib.pyplot as plt
 
-import analysis as al
-import numpy as np
+from analysis import ISCATDataProcessor
 
-filepath = filedialog.askopenfilename(
-    title='Select data',
-    filetypes=[('Raw data', '.npy')]
-)
 
-data, metadata = al.load_measurement(filepath)
-peaks = al.identify_peaks(filepath)
+# Command line argument allowed, otherwise a file dialog will appear
+filename = sys.argv[1] if len(sys.argv) > 1 else None
+data = ISCATDataProcessor(filename)
 
-wavelens = np.linspace(
-    metadata['Laser.wavelength [nm]']['Start'],
-    metadata['Laser.wavelength [nm]']['Stop'],
-    metadata['Laser.wavelength [nm]']['Number'])
-
+images = data.images
+peaks = data.peaks()
+wavelens = data.wavelen()
 fig, ax = plt.subplots(figsize=(8, 5))
 
 for peak in peaks:
-    ax.plot(wavelens, data[:,*peak])
+    ax.plot(wavelens, images[:,*peak])
 
 ax.set_xlabel('Wavelength (nm)')
 ax.set_ylabel('Contrast')

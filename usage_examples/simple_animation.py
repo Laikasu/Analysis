@@ -6,36 +6,39 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
-import analysis as al
+from analysis import ISCATDataProcessor
 import numpy as np
+import sys
 
-filepath = '/home/casperdely/Measurements/2025-10-09_focus_sweep_pfs_avg/40nm_focus.npy'
-# filepath = filedialog.askopenfilename(
-#     title='Select data',
-#     filetypes=[('Raw data', '.npy')]
-# )
-print(filepath)
-
-data, metadata = al.load_measurement(filepath)
+# Command line argument allowed, otherwise a file dialog will appear
+filename = sys.argv[1] if len(sys.argv) > 1 else None
+data = ISCATDataProcessor(filename)
 
 
 fig, ax = plt.subplots()
 
-pxsize_image = metadata['Camera.pixel_size [um]']
-magnification = metadata['Setup.magnification']
-pxsize_object = pxsize_image/magnification
+roi_size_x, roi_size_y = data.roi_size()
+images = data.images
 
-height, width = np.shape(data[0])
-
-image = plt.imshow(data[0], 'gray', extent=(0, width*pxsize_object, 0, height*pxsize_object))
+image = plt.imshow(images[0], 'gray', extent=(0, roi_size_x, 0, roi_size_y))
 fig.colorbar(image)
 scalebar = AnchoredSizeBar(ax.transData, 10, '10 um', 'lower center', pad=0.1, frameon=False, color='white', sep=5)
 ax.add_artist(scalebar)
 
 def update(frame):
-    image.set_data(data[frame])
+    image.set_data(images[frame])
     return image,
 
-anim = FuncAnimation(fig, update, len(data))
+anim = FuncAnimation(fig, update, len(images))
 plt.show()
-anim.save(os.path.splitext(filepath)[0] + '.gif')
+
+
+# Save
+filepath = filedialog.asksaveasfilename(
+                title='Save animation',
+                filetypes=[('Animation', '.gif')],
+                initialdir=os.path.dirname(data.filepath)
+            )
+
+if filepath is not None:
+    anim.save(filepath)
