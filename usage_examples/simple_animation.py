@@ -40,5 +40,5 @@ filepath = filedialog.asksaveasfilename(
                 initialdir=os.path.dirname(data.filepath)
             )
 
-if filepath is not None:
+if filepath is not '':
     anim.save(filepath)
