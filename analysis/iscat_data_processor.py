@@ -12,20 +12,21 @@ from numpy.typing import NDArray
 from scipy import ndimage
 from skimage.filters import difference_of_gaussians
 import hashlib
+import re
 
 from tkinter import filedialog
 from collections.abc import Mapping
 
 from . import processing as pc
 from .symmetry import symmetry
-from .analysis import ask_threshold
+from .analysis import peakfinder
 
 
 
 
 class ISCATDataProcessor():
-    def __init__(self, filepath=None):
-        self._load_measurement(filepath)
+    def __init__(self, filepath=None, reprocess=False):
+        self._load_measurement(filepath, reprocess)
         self._data = None
     
     def _load_measurement(self, filepath=None, reprocess=False):
@@ -33,7 +34,7 @@ class ISCATDataProcessor():
         if filepath is None:
             filepath = filedialog.askopenfilename(
                 title='Select Data',
-                filetypes=[('Raw Data', '.npy')],
+                filetypes=[('Raw Data', '.npy'),('Raw Data Stack', '.npz')],
                 initialdir='Measurements'
             )
         
@@ -42,19 +43,22 @@ class ISCATDataProcessor():
             exit(0)
         
         self.filepath = filepath
+        print(f'Selected {self.filepath}')
 
         # Check the file exists
         if not os.path.exists(filepath):
             raise FileNotFoundError(f'File {filepath} not found')
         
-        if not os.path.splitext(filepath)[1] in ('.tif', '.npy'):
+        if not os.path.splitext(filepath)[1] in ('.tif', '.npy', '.npz'):
             raise ValueError('File must be a .tif or .npy file')
         
 
         # Load metadata
         metadatafile = os.path.splitext(filepath)[0] + '.yaml'
         if not os.path.exists(metadatafile):
-            raise FileNotFoundError(f'Metadata file {metadatafile} not found')
+            metadatafile = re.sub(r"_\d(?=\.yaml$)", "", metadatafile)
+            if not os.path.exists(metadatafile):
+                raise FileNotFoundError(f'Metadata file {metadatafile} not found')
 
         with open(metadatafile, 'r') as file:
             raw_metadata = yaml.safe_load(file)
@@ -78,37 +82,52 @@ class ISCATDataProcessor():
         # Process
         print(f'Processing {os.path.basename(filepath)}')
 
-        self._data = np.load(filepath).squeeze()
+        if os.path.splitext(filepath)[1] == '.npz':
+            data = np.load(filepath)
+            arrays = [data[key] for key in data.files]
+            self._data = np.stack(arrays)
+        else:
+            self._data = np.load(filepath).squeeze()
+        
         # Average
         if 'Camera.averaging' in self.metadata.keys():
             count = self.metadata['Camera.averaging']
-            image = np.average(self._data[:,:count],axis=1)
+            idx = [slice(None)] * self._data.ndim
+            idx[-3] = slice(None, count)
+            image = np.average(self._data[tuple(idx)],axis=-3)
         else:
-            image = self._data[:,0]
+            image = np.take(self._data, 0, axis=-3)
 
         # Background subtraction
-        self.background = np.array([pc.common_background(im[-4:]) for im in self._data])
+        idx = [slice(None)] * self._data.ndim
+        idx[-3] = slice(-4, None)
+        bg = self._data[tuple(idx)]
+        *batch, i, h, w = bg.shape
+        reshaped =  bg.reshape(-1, i, h, w)
+
+        self.background = np.array([pc.common_background(im[-4:]) for im in reshaped]).reshape(*batch, h, w)
         self.images = pc.background_subtracted(image,self.background)
         print(f'Processed {os.path.basename(filepath)}')
 
         np.savez(storage_path, images=self.images, background=self.background)
 
-    def peaks(self, use_symmetry=True, threshold=None, reprocess=False, margin=20):
+    def peaks(self, use_symmetry=True, threshold=None, reprocess=False, margin=20, peakfile=None):
         """Sees if the peaks have already been identified, if not identifies them and saves to file."""
         # Peak file path
-        storage_path = os.path.join('Data', self._hash_file(self.filepath))
-        name, ext = os.path.splitext(storage_path)
-        peakfile = f'{name}_peaks.npy'
+        if not peakfile:
+            storage_path = os.path.join('Data', self._hash_file(self.filepath))
+            name, ext = os.path.splitext(storage_path)
+            peakfile = f'{name}_peaks.npy'
 
         # Check if already processed
         if os.path.exists(peakfile) and not reprocess:
             peaks = np.load(peakfile)
         else:
-            peaks = self._find_peaks(self.images, use_symmetry=True, threshold=threshold)
+            peaks = self._find_peaks(self.images, use_symmetry=True)
             np.save(peakfile, peaks)
 
         # Filter marginal peaks
-        count, rows, cols = self.images.shape
+        rows, cols = self.images.shape[-2:]
         indeces = []
         for i, peak in enumerate(peaks):
             if peak[0] < margin or peak[0] > rows - margin or peak[1] < margin or peak[1] > cols - margin:
@@ -117,28 +136,20 @@ class ISCATDataProcessor():
         return peaks
 
 
-    def _find_peaks(self, data, use_symmetry=True, threshold=None):
+    def _find_peaks(self, data, use_symmetry=True):
         """Identify peaks through circular convolution and return in list."""
         print('Looking for peaks...')
-
-        processed = []
-        filtered = difference_of_gaussians(data, 2, 4)
-
-        # Use covolution with circle to find the psfs
-        if use_symmetry:
-            processed.append(symmetry(filtered,np.arange(4,10,2)))
-        else:
-            processed.append(filtered)
         
-        processed = np.array(processed).squeeze()
+        if data.ndims == 5:
+            peaks = peakfinder(data[0], use_symmetry)
+        else:
+            peaks = peakfinder(data, use_symmetry)
 
-        if threshold is None:
-            threshold = ask_threshold(data, processed)
-            if threshold is None:
-                print('No threshold selected, exiting')
-                exit(0)
+        
 
-        peaks = self._local_max_peaks(np.average(processed, axis=0), threshold)
+        if peaks is None:
+            print('No peaks selected, exiting')
+            exit(0)
 
         print(f'Found {peaks.shape[0]} peaks!')
 
@@ -210,7 +221,7 @@ class ISCATDataProcessor():
         return wavelen
     
     def defocus(self) -> NDArray:
-        defocus = self.metadata.get('Setup.z_focus [um]', self.metadata.get('Setup.defocus [nm]', None))
+        defocus = self.metadata.get('Setup.z_focus [um]', self.metadata.get('Setup.defocus [um]', None))
         if defocus is None:
             raise ValueError("Defocus value is missing in metadata")
         if isinstance(defocus, Mapping):

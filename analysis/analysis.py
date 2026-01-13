@@ -11,6 +11,8 @@ import yaml
 import os
 import hashlib
 
+import re
+
 
 from scipy.interpolate import interp1d
 
@@ -32,7 +34,7 @@ import matplotlib.pyplot as plt
 
 
 
-def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, default=30):
+def peakfinder(data, processed, title="Peak Finder", min_val=1, max_val=200, default=30, use_symmetry=True):
     # --- Hidden root ---
     root = tk.Tk()
     root.withdraw()  # hide the root window
@@ -43,6 +45,7 @@ def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, 
     # --- Dialog class ---
     class ThresholdDialog(tk.Toplevel):
         def __init__(self, parent):
+            self.framedim = data.ndim - 2
             super().__init__(parent)
             self.title(title)
             # self.minsize(1000,800)
@@ -50,8 +53,15 @@ def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, 
             self.grab_set()  # modal
             self.result = default
 
-            self.peaks = local_max_peaks(processed[0], default/1000)
-            self.image = data if data.ndim == 2 else data[0]
+            filtered = difference_of_gaussians(data[*([0]*self.framedim)], 2, 4)
+            # Use covolution with circle to find the psfs
+            if use_symmetry:
+                processed = symmetry(filtered,np.arange(4,10,2))
+            else:
+                processed = filtered
+
+            self.peaks = local_max_peaks(processed, default/1000)
+            self.image = data if data.ndim == 2 else data[(0,)*self.framedim]
 
             # --- Matplotlib figure ---
             self.fig, ax = plt.subplots(figsize=(8, 5))
@@ -66,10 +76,16 @@ def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, 
 
             if data.ndim > 2:
                 # Frame slider
-                self.frame_slider = tk.Scale(self, from_=0, to=len(data)-1, orient="horizontal",
+                self.frame_slider = tk.Scale(self, from_=0, to=data.shape[0]-1, orient="horizontal",
                                     label="Frame", command=self.update_plot)
                 self.frame_slider.set(0)
                 self.frame_slider.pack(fill="x", padx=10, pady=5)
+            
+            if data.ndim > 3:
+                self.frame_slider2 = tk.Scale(self, from_=0, to=data.shape[1]-1, orient="horizontal",
+                                    label="Frame", command=self.update_plot)
+                self.frame_slider2.set(0)
+                self.frame_slider2.pack(fill="x", padx=10, pady=5)
 
             # Threshold slider
             self.threshold_slider = tk.Scale(self, from_=min_val, to=max_val, orient="horizontal",
@@ -93,11 +109,25 @@ def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, 
 
         def update_plot(self, val):
             threshold = self.threshold_slider.get()
-            frame = self.frame_slider.get()
-            self.image = data[frame]
+
+            frame = []
+            if self.framedim > 0:
+                frame.append(self.frame_slider.get())
+            
+            if self.framedim > 1:
+                frame.append(self.frame_slider2.get())
+
+            self.image = data[*frame]
             self.imshow.set_data(self.image)
 
-            self.peaks = local_max_peaks(processed[frame], threshold/1000)
+            filtered = difference_of_gaussians(data[*frame], 2, 4)
+            # Use covolution with circle to find the psfs
+            if use_symmetry:
+                processed = symmetry(filtered,np.arange(4,10,2))
+            else:
+                processed = filtered
+
+            self.peaks = local_max_peaks(processed, threshold/1000)
 
             if len(self.peaks) == 1:
                 self.sc.set_offsets(self.peaks[0])
@@ -112,13 +142,13 @@ def ask_threshold(data, processed, title="Peak Finder", min_val=1, max_val=200, 
         
         def on_cancel(self):
             #self.fig.remove()
-            self.result = None
+            self.peaks = None
             self.destroy()
 
     # --- Open dialog and wait ---
     dialog = ThresholdDialog(root)
     root.wait_window(dialog)
-    result = dialog.result
+    result = dialog.peaks
     root.destroy()  # clean up hidden root
 
     return result
@@ -173,9 +203,20 @@ def open_wavelen_sweep(filepath, normalize=False):
         data = np.load(filepath)
     elif filepath.endswith('.tif'):
         data = tiff.imread(filepath)
+    else:
+        raise ValueError('Error: filepath should end in npy or tif')
     
-    with open(filepath.removesuffix('_raw.npy').removesuffix('.tif') + '.yaml', 'r') as file:
-        metadata = yaml.load(file, yaml.Loader)
+    metadataname = filepath.removesuffix('_raw.npy').removesuffix('.tif') + '.yaml'
+    if os.path.exists(metadataname):
+        with open(metadataname, 'r') as file:
+            metadata: dict = yaml.load(file, yaml.Loader)
+    else:
+        metadataname = os.path.exists(re.sub(r"_\d(?=\.yaml$)", "", metadataname))
+        if os.path.exists(metadataname):
+            with open(metadataname, 'r') as file:
+                metadata: dict = yaml.load(file, yaml.Loader)
+        else:
+            raise FileNotFoundError('Error: metadata file not found')
         
     wl = metadata['Laser.wavelength [nm]']
     wavelens = np.linspace(wl['Start'], wl['Stop'], wl['Number'])
@@ -194,6 +235,7 @@ def open_wavelen_sweep(filepath, normalize=False):
         spectrum = norm(davgbg[:,np.newaxis, np.newaxis,np.newaxis])
         #spectrum = laser_spectrum(wavelens)[:,np.newaxis, np.newaxis,np.newaxis]
         processed = (data-bg)/spectrum
+        background = bg
     
     return wavelens, raw, processed, background
 
