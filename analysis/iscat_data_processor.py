@@ -16,7 +16,7 @@ from tkinter import filedialog
 from collections.abc import Mapping
 
 from . import processing as pc
-from .widgets import start_browser, start_peakfinder
+from .widgets import start_browser, start_peakfinder, peak_editor
 
 
 
@@ -129,14 +129,14 @@ class ISCATDataProcessor():
     
 
     def peak_values(self, use_symmetry=True, reprocess=False, peakfile=None) -> NDArray | list:
-        peaks = self.peaks(use_symmetry, reprocess, peakfile)
+        peaks = self.peaks(use_symmetry, reprocess, peakfile).astype(np.uint16)
 
         n, d, w = self.images.shape[:-2]
-        n_idx = np.arange(n)[:, None, None]   # shape (7,1,1)
-        d_idx = np.arange(d)[None, :, None] # shape (1,20,1)
-        w_idx = np.arange(w)[None, None, :]   # shape (1,1,8)
+        n_idx = np.arange(n)[None, :, None, None]   # shape (7,1,1)
+        d_idx = np.arange(d)[None, None, :, None] # shape (1,20,1)
+        w_idx = np.arange(w)[None, None, None, :]   # shape (1,1,8)
 
-        return np.array([self.images[n_idx, d_idx, w_idx, peak[...,0], peak[...,1]] for peak in peaks])
+        return self.images[n_idx, d_idx, w_idx, peaks[...,0], peaks[...,1]]
     
     def has_peakfile(self):
         storage_path = os.path.join('Data', self._hash_file(self.filepath))
@@ -148,7 +148,7 @@ class ISCATDataProcessor():
     def peaks(self, use_symmetry=True, reprocess=False, peakfile=None):
         """Sees if the peaks have already been identified, if not identifies them and saves to file."""
         # Peak file path
-        if not peakfile:
+        if peakfile is None:
             storage_path = os.path.join('Data', self._hash_file(self.filepath))
             name, ext = os.path.splitext(storage_path)
 
@@ -231,3 +231,6 @@ class ISCATDataProcessor():
     
     def browse(self):
         return start_browser(self)
+    
+    def edit_peaks(self):
+        return peak_editor(self)
