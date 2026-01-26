@@ -9,8 +9,6 @@ import os
 import yaml
 import numpy as np
 from numpy.typing import NDArray
-from scipy import ndimage
-from skimage.filters import difference_of_gaussians
 import hashlib
 import re
 
@@ -18,8 +16,7 @@ from tkinter import filedialog
 from collections.abc import Mapping
 
 from . import processing as pc
-from .symmetry import symmetry
-from .analysis import peakfinder
+from .widgets import start_browser, start_peakfinder
 
 
 
@@ -34,7 +31,7 @@ class ISCATDataProcessor():
         if filepath is None:
             filepath = filedialog.askopenfilename(
                 title='Select Data',
-                filetypes=[('Raw Data', '.npy'),('Raw Data Stack', '.npz')],
+                filetypes=[('Raw Data Files', '*.npy *.npz'), ('All Files', '*.*')],
                 initialdir='Measurements'
             )
         
@@ -50,7 +47,11 @@ class ISCATDataProcessor():
             raise FileNotFoundError(f'File {filepath} not found')
         
         if not os.path.splitext(filepath)[1] in ('.tif', '.npy', '.npz'):
-            raise ValueError('File must be a .tif or .npy file')
+            raise ValueError('File must be a .tif, .npy or .npz file')
+        
+        self._stack = False
+        if os.path.splitext(filepath)[1] == '.npz':
+            self._stack = True
         
 
         # Load metadata
@@ -73,7 +74,7 @@ class ISCATDataProcessor():
         os.makedirs('Data', exist_ok=True)
         storage_path = os.path.join('Data', self._hash_file(filepath))
         if os.path.exists(storage_path) and not reprocess:
-            data = np.load(storage_path)
+            data = np.load(storage_path, mmap_mode='r')
             self.images = data['images']
             self.background = data['background']
             return
@@ -82,102 +83,97 @@ class ISCATDataProcessor():
         # Process
         print(f'Processing {os.path.basename(filepath)}')
 
-        if os.path.splitext(filepath)[1] == '.npz':
-            data = np.load(filepath)
-            arrays = [data[key] for key in data.files]
-            self._data = np.stack(arrays)
+        if self._stack:
+            data = np.load(filepath, mmap_mode='r')
+            self.images = []
+            self.background = []
+
+            size = len(data.files)
+            for i, key in enumerate(data.files):
+                print(f'Processing {i+1}/{size}')
+                images, bgs = self.process(data[key])
+                self.images.append(images)
+                self.background.append(bgs)
+            
+            self.images = np.stack(self.images)
+            self.background = np.stack(self.background)
         else:
             self._data = np.load(filepath).squeeze()
+            self.images, self.background = self.process(self._data)
         
-        # Average
-        if 'Camera.averaging' in self.metadata.keys():
-            count = self.metadata['Camera.averaging']
-            idx = [slice(None)] * self._data.ndim
-            idx[-3] = slice(None, count)
-            image = np.average(self._data[tuple(idx)],axis=-3)
-        else:
-            image = np.take(self._data, 0, axis=-3)
-
-        # Background subtraction
-        idx = [slice(None)] * self._data.ndim
-        idx[-3] = slice(-4, None)
-        bg = self._data[tuple(idx)]
-        *batch, i, h, w = bg.shape
-        reshaped =  bg.reshape(-1, i, h, w)
-
-        self.background = np.array([pc.common_background(im[-4:]) for im in reshaped]).reshape(*batch, h, w)
-        self.images = pc.background_subtracted(image,self.background)
         print(f'Processed {os.path.basename(filepath)}')
 
         np.savez(storage_path, images=self.images, background=self.background)
 
-    def peaks(self, use_symmetry=True, threshold=None, reprocess=False, margin=20, peakfile=None):
+
+    def process(self, data):
+        # Average
+        if 'Camera.averaging' in self.metadata.keys():
+            count = self.metadata['Camera.averaging']
+            idx = [slice(None)] * data.ndim
+            idx[-3] = slice(None, count)
+            image = np.average(data[tuple(idx)],axis=-3)
+        else:
+            image = np.take(data, 0, axis=-3)
+
+        # Background subtraction
+        idx = [slice(None)] * data.ndim
+        idx[-3] = slice(-4, None)
+        bg = data[tuple(idx)]
+        *batch, i, h, w = bg.shape
+        reshaped =  bg.reshape(-1, i, h, w)
+
+        background = np.array([pc.common_background(im[-4:]) for im in reshaped]).reshape(*batch, h, w)
+        return (pc.background_subtracted(image, background),
+                background)
+    
+
+    def peak_values(self, use_symmetry=True, reprocess=False, peakfile=None) -> NDArray | list:
+        peaks = self.peaks(use_symmetry, reprocess, peakfile)
+
+        n, d, w = self.images.shape[:-2]
+        n_idx = np.arange(n)[:, None, None]   # shape (7,1,1)
+        d_idx = np.arange(d)[None, :, None] # shape (1,20,1)
+        w_idx = np.arange(w)[None, None, :]   # shape (1,1,8)
+
+        return np.array([self.images[n_idx, d_idx, w_idx, peak[...,0], peak[...,1]] for peak in peaks])
+    
+    def has_peakfile(self):
+        storage_path = os.path.join('Data', self._hash_file(self.filepath))
+        name, ext = os.path.splitext(storage_path)
+
+        peakfile = f'{name}_peaks.npy'
+        return os.path.exists(peakfile)
+    
+    def peaks(self, use_symmetry=True, reprocess=False, peakfile=None):
         """Sees if the peaks have already been identified, if not identifies them and saves to file."""
         # Peak file path
         if not peakfile:
             storage_path = os.path.join('Data', self._hash_file(self.filepath))
             name, ext = os.path.splitext(storage_path)
+
             peakfile = f'{name}_peaks.npy'
 
         # Check if already processed
         if os.path.exists(peakfile) and not reprocess:
             peaks = np.load(peakfile)
         else:
-            peaks = self._find_peaks(self.images, use_symmetry=True)
+            peaks = self._find_peaks(use_symmetry)
             np.save(peakfile, peaks)
-
-        # Filter marginal peaks
-        rows, cols = self.images.shape[-2:]
-        indeces = []
-        for i, peak in enumerate(peaks):
-            if peak[0] < margin or peak[0] > rows - margin or peak[1] < margin or peak[1] > cols - margin:
-                indeces.append(i)
-        peaks = np.delete(peaks, indeces, axis=0)
+                
         return peaks
 
 
-    def _find_peaks(self, data, use_symmetry=True):
+    def _find_peaks(self, use_symmetry=True):
         """Identify peaks through circular convolution and return in list."""
         print('Looking for peaks...')
-        
-        if data.ndims == 5:
-            peaks = peakfinder(data[0], use_symmetry)
-        else:
-            peaks = peakfinder(data, use_symmetry)
-
-        
-
-        if peaks is None:
+        peaks = start_peakfinder(self, use_symmetry=use_symmetry)
+        if peaks is None or len(peaks) < len(self.images):
             print('No peaks selected, exiting')
             exit(0)
 
-        print(f'Found {peaks.shape[0]} peaks!')
+        print(f'Found peaks!')
 
-        return peaks
-
-
-    def _local_max_peaks(self, image, threshold = 1/20):
-        """Find peaks based on a local maximum threshold technique"""
-
-        # Find maxima
-        thresholded = np.where(np.abs(image)>np.max(image)*threshold, 1, 0)
-        local_max = ndimage.maximum_filter(thresholded, size=5)
-        # Label objects
-        labeled, num_features = ndimage.label(local_max)
-
-        # fig, ax = plt.subplots(1,2)
-        # ax[0].imshow(image)
-        # ax[1].imshow(labeled)
-        # plt.show()
-        # Remove unresolvable objects
-        sizes = ndimage.sum(thresholded, labeled, index=np.arange(1, num_features + 1))
-        remove_indeces = np.arange(1, num_features + 1)[sizes > 100]
-        labeled[np.isin(labeled, remove_indeces)] = 0
-        labeled, num_features = ndimage.label(labeled)
-
-        
-
-        peaks = np.array(ndimage.center_of_mass(image, labeled, range(1, num_features+1))).astype(int)
         return peaks
 
     def _hash_file(self, filepath):
@@ -191,6 +187,8 @@ class ISCATDataProcessor():
 
         return f"{name}_{hash}.npz"
     
+
+    # Functions that return parameters
     def raw(self):
         if self._data is None:
             self._data = np.load(self.filepath).squeeze()
@@ -230,3 +228,6 @@ class ISCATDataProcessor():
                 defocus['Stop'],
                 defocus['Number'])
         return defocus
+    
+    def browse(self):
+        return start_browser(self)

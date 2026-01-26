@@ -15,7 +15,7 @@ wavelens = data.wavelen()
 defocus = data.defocus()
 fig, ax = plt.subplots(figsize=(8, 5))
 
-avg = np.mean(np.array([images[:,:,*peak] for peak in peaks]), axis=0)
+avg = np.mean(np.array([images[0,:,:,*peak] for peak in peaks]), axis=0)
 for i in range(len(avg[0])):
     ax.plot(defocus, avg[:,i], label={f'{wavelens[i]:.0f} nm'})
 
