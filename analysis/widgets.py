@@ -6,7 +6,7 @@ Provides widgets to look at and select data.
 
 import numpy as np
 
-from PySide6.QtWidgets import QWidget, QSlider, QLabel, QFormLayout, QVBoxLayout, QApplication, QDialogButtonBox, QCheckBox, QGroupBox
+from PySide6.QtWidgets import QWidget, QSlider, QLabel, QFormLayout, QVBoxLayout, QApplication, QDialogButtonBox, QCheckBox, QGroupBox, QPushButton
 from PySide6.QtCore import Qt
 
 from scipy.optimize import linear_sum_assignment
@@ -16,6 +16,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 import matplotlib.pyplot as plt
 
 from skimage.filters import difference_of_gaussians
+from scipy.ndimage import gaussian_filter1d
 from .processing import local_max_peaks
 from .symmetry import symmetry
 
@@ -353,6 +354,10 @@ class PeakEditor(Browser):
         self._dragging_index = None
         self._starting_pos = np.array([0,0])
 
+        self.smoothbutton = QPushButton('Smooth')
+        self.smoothbutton.clicked.connect(self.smooth)
+        self.main_layout.addWidget(self.smoothbutton)
+
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.apply_peaks)
@@ -380,6 +385,17 @@ class PeakEditor(Browser):
         peakfile = f'{name}_peaks.npy'
         np.save(peakfile, self.peaks_fromfile)
         self.close()
+    
+    def smooth(self):
+        N, n, f, w, p = self.peaks_fromfile.shape
+        displacement = self.peaks_fromfile - self.peaks_fromfile[:,0,0,0].reshape(-1,1,1,1,2)
+        d = np.mean(displacement, axis=0).squeeze().reshape(-1,2)
+
+        d0 = d[:,0]
+        d1 = d[:,1]
+        disp = np.column_stack((gaussian_filter1d(d0, sigma=2, mode='reflect'), gaussian_filter1d(d1, sigma=2, mode='reflect'))).reshape(1, n, f, 1, 2)
+        self.peaks_fromfile = self.peaks_fromfile[:,0,0,0].reshape(-1,1,1,1,2) + disp
+        self.update_peaks()
         
 
     def on_press(self, event):
