@@ -130,13 +130,26 @@ class ISCATDataProcessor():
 
     def peak_values(self, use_symmetry=True, reprocess=False, peakfile=None) -> NDArray | list:
         peaks = self.peaks(use_symmetry, reprocess, peakfile).astype(np.uint16)
+        if len(self.images.shape) == 5:
+            n, d, w = self.images.shape[:-2]
+            n_idx = np.arange(n)[None, :, None, None]
+            d_idx = np.arange(d)[None, None, :, None]
+            w_idx = np.arange(w)[None, None, None, :]
 
-        n, d, w = self.images.shape[:-2]
-        n_idx = np.arange(n)[None, :, None, None]   # shape (7,1,1)
-        d_idx = np.arange(d)[None, None, :, None] # shape (1,20,1)
-        w_idx = np.arange(w)[None, None, None, :]   # shape (1,1,8)
+            return self.images[n_idx, d_idx, w_idx, peaks[...,0], peaks[...,1]]
+        
+        if len(self.images.shape) == 4:
+            n, d = self.images.shape[:-2]
+            n_idx = np.arange(n)[None, :, None, None]
+            d_idx = np.arange(d)[None, None, :, None]
 
-        return self.images[n_idx, d_idx, w_idx, peaks[...,0], peaks[...,1]]
+            return self.images[n_idx, d_idx, peaks[...,0], peaks[...,1]]
+        
+        if len(self.images.shape) == 3:
+            n, = self.images.shape[:-2]
+            n_idx = np.arange(n)[None, :, None, None]
+
+            return self.images[n_idx, peaks[...,0], peaks[...,1]]
     
     def has_peakfile(self):
         storage_path = os.path.join('Data', self._hash_file(self.filepath))

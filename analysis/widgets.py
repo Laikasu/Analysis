@@ -24,7 +24,7 @@ import os
 
 
 class Browser(QWidget):
-    def __init__(self, data, lock_stack=False):
+    def __init__(self, data):
         super().__init__()
         # --- Matplotlib figure ---
         self.fig, self.ax = plt.subplots(figsize=(8, 5))
@@ -51,8 +51,6 @@ class Browser(QWidget):
             self.sliders.append(stack_slider)
             self.main_layout.addWidget(self.stack_label)
             self.main_layout.addWidget(stack_slider)
-            if lock_stack:
-                stack_slider.setEnabled(False)
 
 
 
@@ -117,14 +115,12 @@ class Browser(QWidget):
 
 
 class PeakFinder(Browser):
-    def __init__(self, data, use_symmetry=True, lock_stack=True):
-        super().__init__(data, lock_stack=lock_stack)
+    def __init__(self, data, use_symmetry=True):
+        super().__init__(data)
 
         self.result: np.ndarray | None = None
         self.peaks = [np.empty((5,2))]
         self.drifts = []
-        
-        self.lock_stack = lock_stack
         self.use_symmetry = use_symmetry
 
         self.cid_press = self.fig.canvas.mpl_connect('button_press_event', self.on_press)
@@ -132,6 +128,9 @@ class PeakFinder(Browser):
         self.cid_motion = self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
         self._dragging_index = None
         self._starting_pos = np.array([0,0])
+
+        if data._stack:
+            self.sliders[0].setEnabled(False)
 
         fitgroup = QGroupBox('Fitting')
         groupboxlayout = QFormLayout()
@@ -173,7 +172,7 @@ class PeakFinder(Browser):
         filtered = difference_of_gaussians(self.image, 2, 4)
         # Use covolution with circle to find the psfs
         if self.symmetry.isChecked():
-            processed = symmetry(filtered,np.arange(6,16))
+            processed = symmetry(filtered,np.arange(6,16,2))
         else:
             processed = filtered
 
@@ -188,7 +187,7 @@ class PeakFinder(Browser):
         # Calculate peaks
         filtered = difference_of_gaussians(self.image, 2, 4)
         if self.use_symmetry:
-            processed = symmetry(filtered,np.arange(6,16))
+            processed = symmetry(filtered,np.arange(6,16,2))
         else:
             processed = filtered
 
@@ -213,12 +212,12 @@ class PeakFinder(Browser):
     def calculate_defocus_drift(self):
         frame = [slider.value()-1 for slider in self.sliders]
         # Calculate peaks
-        drift = np.zeros((len(self.data.images[1]), 2), dtype=np.int16)
+        drift = np.zeros((len(self.data.images[1]), 2), dtype=np.float64)
         for k, image in enumerate(self.data.images[frame[0], :,frame[2]]):
             
             filtered = difference_of_gaussians(image, 2, 4)
             if self.use_symmetry:
-                processed = symmetry(filtered,np.arange(4,10,2))
+                processed = symmetry(filtered,np.arange(6,16,2))
             else:
                 processed = filtered
 
@@ -240,7 +239,9 @@ class PeakFinder(Browser):
                 if D[i, j] < d_max:
                     matches.append((i, j))
             
-            drift[k] = np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
+            if len(matches) != 0:
+                drift[k] = np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
+            
 
         return drift
     
@@ -252,12 +253,18 @@ class PeakFinder(Browser):
         self.sc.set_offsets(offsets)
         self.canvas.draw_idle()
     
+    def update_plot(self):
+        frame = [slider.value()-1 for slider in self.sliders]
+        self.image = self.data.images[*frame]
+        self.imshow.set_data(self.image)
+        self.canvas.draw_idle()
+    
     def cancel(self):
         self.result = None
         self.close()
     
     def apply_peaks(self):
-        if not self.lock_stack:
+        if not self.data._stack:
             self.result = self.peaks[0]
             self.close()
 
@@ -271,7 +278,6 @@ class PeakFinder(Browser):
             # Peaks: (P,2) drift (n, 2)
             peaks  = np.array(self.peaks)
             drifts = np.array(self.drifts)
-            print(drifts.shape)
             n, d, _ = drifts.shape
             n, N, _ = peaks.shape
             self.result = peaks.reshape(n, N, 1, 1, 2) + drifts.reshape(n, 1, d, 1, 2)
@@ -321,7 +327,6 @@ class PeakFinder(Browser):
             self.peaks[-1][self._dragging_index] = [int(event.ydata), int(event.xdata)]
             self.update_peaks()
         if event.button == 3 and self._starting_pos is not None:
-            print(self.peaks[-1][:,::-1])
             self.sc.set_offsets(self.peaks[-1][:,::-1] + np.array([int(event.xdata), int(event.ydata)]) - self._starting_pos[::-1])
             self.canvas.draw_idle()
         
@@ -341,7 +346,7 @@ class PeakFinder(Browser):
 
 class PeakEditor(Browser):
     def __init__(self, data):
-        super().__init__(data, lock_stack=False)
+        super().__init__(data)
 
         self.sensitivity = 10
 
@@ -465,12 +470,12 @@ def start_browser(data):
     app.exec()
 
 
-def start_peakfinder(data, use_symmetry=True, lock_stack=-1):
+def start_peakfinder(data, use_symmetry=True):
     app.setApplicationName("Peak Finder")
     app.setApplicationDisplayName("Peak Finder")
     app.setStyle("fusion")
 
-    w = PeakFinder(data, use_symmetry, lock_stack=lock_stack)
+    w = PeakFinder(data, use_symmetry)
     w.show()
 
     app.exec()
