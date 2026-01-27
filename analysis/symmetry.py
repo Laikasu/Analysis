@@ -7,14 +7,19 @@ def circular_mask(radius):
     y, x = np.ogrid[:size, :size]
     center = radius
     mask = ((x - center)**2 + (y - center)**2 <= (radius-1)**2) * ((x - center)**2 + (y - center)**2 >= (radius-2)**2)
-    return mask.astype(float)
+    return mask.astype(float)/np.sum(mask)
 
 def convolve(image, radii):
     output = np.zeros_like(image)
+    image_sq = image**2
     for radius in radii:
         mask = circular_mask(radius)
-        mask/=np.sum(mask)
-        output += convolve2d(image, mask, mode='same')**2
+        mean = convolve2d(image, mask, mode='same')
+        mean_sq = convolve2d(image_sq, mask, mode='same')
+        var = mean_sq - mean**2
+        # Threshold mean to take out low mean, very low var => big
+        mask = mean_sq>np.percentile(mean_sq, 80)
+        output += np.where(mask, mean**2/var, 0)
     return output
 
 def symmetry(data:np.ndarray, radii):

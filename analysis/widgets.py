@@ -173,7 +173,7 @@ class PeakFinder(Browser):
         filtered = difference_of_gaussians(self.image, 2, 4)
         # Use covolution with circle to find the psfs
         if self.symmetry.isChecked():
-            processed = symmetry(filtered,np.arange(4,20,2))
+            processed = symmetry(filtered,np.arange(6,16))
         else:
             processed = filtered
 
@@ -188,7 +188,7 @@ class PeakFinder(Browser):
         # Calculate peaks
         filtered = difference_of_gaussians(self.image, 2, 4)
         if self.use_symmetry:
-            processed = symmetry(filtered,np.arange(4,20,2))
+            processed = symmetry(filtered,np.arange(6,16))
         else:
             processed = filtered
 
