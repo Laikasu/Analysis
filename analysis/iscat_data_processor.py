@@ -15,10 +15,18 @@ import re
 from tkinter import filedialog
 from collections.abc import Mapping
 
+from numpy.lib.stride_tricks import sliding_window_view
+from skimage.registration import phase_cross_correlation
+from scipy.optimize import curve_fit
+
 from . import processing as pc
 from .widgets import start_browser, start_peakfinder, peak_editor
 
-
+sigmax = 3
+sigmay = 3
+def gaussian_2d(coords, A, mux, muy):
+    x, y = coords
+    return A * np.exp(-(((x - mux)**2)/(2*sigmax**2) + ((y - muy)**2)/(2*sigmay**2)))
 
 
 class ISCATDataProcessor():
@@ -75,8 +83,9 @@ class ISCATDataProcessor():
         storage_path = os.path.join('Data', self._hash_file(filepath))
         if os.path.exists(storage_path) and not reprocess:
             data = np.load(storage_path, mmap_mode='r')
-            self.images = data['images']
-            self.background = data['background']
+            self.images: np.ndarray = data['images']
+            self.background: np.ndarray = data['background']
+            print('Loaded in data')
             return
         
 
@@ -106,7 +115,7 @@ class ISCATDataProcessor():
         np.savez(storage_path, images=self.images, background=self.background)
 
 
-    def process(self, data):
+    def process(self, data) -> tuple[NDArray, NDArray]:
         # Average
         if 'Camera.averaging' in self.metadata.keys():
             count = self.metadata['Camera.averaging']
@@ -128,37 +137,65 @@ class ISCATDataProcessor():
                 background)
     
 
-    def peak_values(self, use_symmetry=True, reprocess=False, peakfile=None) -> NDArray | list:
-        peaks = self.peaks(use_symmetry, reprocess, peakfile).astype(np.uint16)
-        if len(self.images.shape) == 5:
-            n, d, w = self.images.shape[:-2]
-            n_idx = np.arange(n)[None, :, None, None]
-            d_idx = np.arange(d)[None, None, :, None]
-            w_idx = np.arange(w)[None, None, None, :]
-
-            return self.images[n_idx, d_idx, w_idx, peaks[...,0], peaks[...,1]]
+    def peaks(self):
+        peaks = self.peak_positions().astype(np.uint16)
         
-        if len(self.images.shape) == 4:
-            n, d = self.images.shape[:-2]
-            n_idx = np.arange(n)[None, :, None, None]
-            d_idx = np.arange(d)[None, None, :, None]
-
-            return self.images[n_idx, d_idx, peaks[...,0], peaks[...,1]]
+        # Gaussian blur makes less sensitive to exact pixel, sort of averages around the peak
+        shape = self.images.shape[:-2]
+        idx = np.ogrid[*tuple(slice(0, s) for s in shape)]
+        return self.images[*idx, peaks[...,0], peaks[...,1]]
         
-        if len(self.images.shape) == 3:
-            n, = self.images.shape[:-2]
-            n_idx = np.arange(n)[None, :, None, None]
+    def _fit(self, size=7):
+        """Fitting function. Current result is suboptimal"""
+        # Fitting
+        print('Starting fit')
 
-            return self.images[n_idx, peaks[...,0], peaks[...,1]]
+        # Average over all peaks to obtain mean patch
+        patches = np.mean(self.psf(size), axis=0)
+
+        y, x = np.mgrid[0:size, 0:size]
+        xdata = np.vstack([x.ravel(), y.ravel()])
+
+        A = np.zeros(patches.shape[:-2], np.float64)
+        
+        # A, x0, y0
+        popt = [0, size//2, size//2]
+        for idx in np.ndindex(A.shape):
+            patch = patches[idx]
+            ydata = patch.ravel()
+            p0 = popt
+            lower_bounds = (-np.inf, 2,2)
+            upper_bounds = (np.inf, 4,4)
+            popt, pcov = curve_fit(gaussian_2d, xdata, ydata, p0, bounds=(lower_bounds, upper_bounds))
+            A[idx]  = popt[0]
+
+        # plt.ioff()
+        print('Done!')
+        return A
+        
     
+    def psf(self, size=7):
+        """Gives the point spread function for each peak"""
+        windows = sliding_window_view(self.images, (size, size), axis=(-2,-1))
+
+        # Weird numpy stuff to index for any dim
+        shape = self.images.shape[:-2]
+        idx = np.ogrid[*tuple(slice(0, s) for s in shape)]
+
+        peaks = self.peak_positions().astype(np.uint16)
+        patches = windows[*idx, peaks[...,0]-size//2, peaks[...,1]-size//2]
+        return patches
+
+
     def has_peakfile(self):
         storage_path = os.path.join('Data', self._hash_file(self.filepath))
         name, ext = os.path.splitext(storage_path)
 
         peakfile = f'{name}_peaks.npy'
         return os.path.exists(peakfile)
-    
-    def peaks(self, use_symmetry=True, reprocess=False, peakfile=None):
+
+
+    def peak_positions(self, peakfile=None):
         """Sees if the peaks have already been identified, if not identifies them and saves to file."""
         # Peak file path
         if peakfile is None:
@@ -168,24 +205,33 @@ class ISCATDataProcessor():
             peakfile = f'{name}_peaks.npy'
 
         # Check if already processed
-        if os.path.exists(peakfile) and not reprocess:
+        if os.path.exists(peakfile):
             peaks = np.load(peakfile)
         else:
-            peaks = self._find_peaks(use_symmetry)
-            np.save(peakfile, peaks)
+            peaks = self.find_peaks(peakfile)
                 
         return peaks
 
 
-    def _find_peaks(self, use_symmetry=True):
+    def find_peaks(self, peakfile=None):
         """Identify peaks through circular convolution and return in list."""
+        
         print('Looking for peaks...')
-        peaks = start_peakfinder(self, use_symmetry=use_symmetry)
-        if peaks is None or len(peaks) < len(self.images):
+        peaks = start_peakfinder(self)
+
+        if peaks is None or (self._stack and len(peaks) < len(self.images)):
             print('No peaks selected, exiting')
             exit(0)
 
         print(f'Found peaks!')
+
+        # Standard location
+        if peakfile is None:
+            storage_path = os.path.join('Data', self._hash_file(self.filepath))
+            name, ext = os.path.splitext(storage_path)
+            peakfile = f'{name}_peaks.npy'
+        
+        np.save(peakfile, peaks)
 
         return peaks
 

@@ -18,7 +18,7 @@ def convolve(image, radii):
         mean_sq = convolve2d(image_sq, mask, mode='same')
         var = mean_sq - mean**2
         # Threshold mean to take out low mean, very low var => big
-        mask = mean_sq>np.percentile(mean_sq, 80)
+        mask = mean_sq>np.percentile(mean_sq, 90)
         output += np.where(mask, mean**2/var, 0)
     return output
 

@@ -6,7 +6,7 @@ Provides widgets to look at and select data.
 
 import numpy as np
 
-from PySide6.QtWidgets import QWidget, QSlider, QLabel, QFormLayout, QVBoxLayout, QApplication, QDialogButtonBox, QCheckBox, QGroupBox, QPushButton
+from PySide6.QtWidgets import QWidget, QSlider, QLabel, QFormLayout, QVBoxLayout, QApplication, QDialogButtonBox, QComboBox, QGroupBox, QPushButton
 from PySide6.QtCore import Qt
 
 from scipy.optimize import linear_sum_assignment
@@ -16,8 +16,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 import matplotlib.pyplot as plt
 
 from skimage.filters import difference_of_gaussians
+from skimage.feature import peak_local_max
 from scipy.ndimage import gaussian_filter1d
-from .processing import local_max_peaks
 from .symmetry import symmetry
 
 import os
@@ -35,7 +35,8 @@ class Browser(QWidget):
         
         self.peaks_fromfile = None
         if self.data.has_peakfile():
-            self.peaks_fromfile = data.peaks()
+            self.peaks_fromfile = data.peak_positions().astype(np.float64)
+
 
         self.main_layout = QVBoxLayout()
         self.main_layout.addWidget(self.canvas, stretch=1)
@@ -107,11 +108,16 @@ class Browser(QWidget):
         frame = [slider.value()-1 for slider in self.sliders]
         self.image = self.data.images[*frame]
         if self.peaks_fromfile is not None:
-            self.sc.set_offsets(self.peaks_fromfile[:,frame[0], frame[1], 0,::-1])
+            self.sc.set_offsets(self.peaks_fromfile[*self.idx(frame),::-1])
         self.imshow.set_data(self.image)
         self.canvas.draw_idle()
 
+    def idx(self, frame, peakidx: None | int = None):
+        peakshape = self.peaks_fromfile.shape[1:-1]
 
+        hasaxis = [0 if peakshape[i] == 1 else frame[i] for i in range(len(frame))]
+        peak = slice(None) if (peakidx is None) else peakidx
+        return (peak, *hasaxis)
 
 
 class PeakFinder(Browser):
@@ -145,18 +151,9 @@ class PeakFinder(Browser):
         self.threshold_slider.sliderReleased.connect(self.calculate_peaks)
         groupboxlayout.addRow(threshold_label, self.threshold_slider)
 
-        upper_threshold_label = QLabel("Upper threshold")
-        self.upper_threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.upper_threshold_slider.setMinimum(1)
-        self.upper_threshold_slider.setMaximum(10000)
-        self.upper_threshold_slider.setValue(10000)
-        self.upper_threshold_slider.sliderReleased.connect(self.calculate_peaks)
-        groupboxlayout.addRow(upper_threshold_label, self.upper_threshold_slider)
-
-        self.symmetry = QCheckBox()
-        self.symmetry.setChecked(True)
-        self.main_layout.addWidget(self.symmetry)
-        self.symmetry.toggled.connect(self.calculate_peaks)
+        self.symmetry = QComboBox()
+        self.symmetry.addItems(("minimum", "symmetry", "maximum"))
+        self.symmetry.currentTextChanged.connect(self.calculate_peaks)
         groupboxlayout.addRow("Symmetry", self.symmetry)
 
         self.main_layout.addWidget(fitgroup)
@@ -171,12 +168,20 @@ class PeakFinder(Browser):
     def calculate_peaks(self):
         filtered = difference_of_gaussians(self.image, 2, 4)
         # Use covolution with circle to find the psfs
-        if self.symmetry.isChecked():
-            processed = symmetry(filtered,np.arange(6,16,2))
-        else:
-            processed = filtered
 
-        self.peaks[-1] = local_max_peaks(processed, self.threshold_slider.value()/10000, self.upper_threshold_slider.value()/10000)
+        mode = self.symmetry.currentText()
+        match mode:
+            case "symmetry":
+                processed = symmetry(filtered,np.arange(6,16,2))
+            case "minimum":
+                processed = -filtered
+            case _:
+                processed = filtered
+
+
+        self.peaks[-1] = peak_local_max(processed,
+                                        threshold_rel=self.threshold_slider.value()/10000,
+                                        min_distance=10)
 
         # Display
         self.update_peaks()
@@ -191,7 +196,9 @@ class PeakFinder(Browser):
         else:
             processed = filtered
 
-        new_peaks = local_max_peaks(processed, self.threshold_slider.value()/10000, self.upper_threshold_slider.value()/10000)
+        new_peaks = peak_local_max(processed,
+                                   threshold_rel=self.threshold_slider.value()/10000,
+                                   min_distance=10)
 
         d_max = dist
         # compute distance matrix
@@ -205,42 +212,43 @@ class PeakFinder(Browser):
             if D[i, j] < d_max:
                 matches.append((i, j))
 
-        displacement = np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
+        if len(matches) == 0:
+            return np.zeros((2))
         
-        return displacement
+        return np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
     
     def calculate_defocus_drift(self):
         frame = [slider.value()-1 for slider in self.sliders]
         # Calculate peaks
         drift = np.zeros((len(self.data.images[1]), 2), dtype=np.float64)
-        for k, image in enumerate(self.data.images[frame[0], :,frame[2]]):
+        # for k, image in enumerate(self.data.images[frame[0], :,frame[2]]):
             
-            filtered = difference_of_gaussians(image, 2, 4)
-            if self.use_symmetry:
-                processed = symmetry(filtered,np.arange(6,16,2))
-            else:
-                processed = filtered
+        #     filtered = difference_of_gaussians(image, 2, 4)
+        #     if self.use_symmetry:
+        #         processed = symmetry(filtered,np.arange(6,16,2))
+        #     else:
+        #         processed = filtered
 
-            new_peaks = local_max_peaks(processed, self.threshold_slider.value()/10000, self.upper_threshold_slider.value()/10000)
+        #     new_peaks = local_max_peaks(processed, self.threshold_slider.value()/10000, self.upper_threshold_slider.value()/10000)
 
-            d_max = 10.0
+        #     d_max = 10.0
 
-            # compute distance matrix
-            D = cdist(self.peaks[-1], new_peaks)
+        #     # compute distance matrix
+        #     D = cdist(self.peaks[-1], new_peaks)
 
-            # penalize large distances
-            D[D > d_max] = 1e6
+        #     # penalize large distances
+        #     D[D > d_max] = 1e6
 
-            row_ind, col_ind = linear_sum_assignment(D)
+        #     row_ind, col_ind = linear_sum_assignment(D)
 
-            matches = []
+        #     matches = []
 
-            for i, j in zip(row_ind, col_ind):
-                if D[i, j] < d_max:
-                    matches.append((i, j))
+        #     for i, j in zip(row_ind, col_ind):
+        #         if D[i, j] < d_max:
+        #             matches.append((i, j))
             
-            if len(matches) != 0:
-                drift[k] = np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
+        #     if len(matches) != 0:
+        #         drift[k] = np.mean([new_peaks[j] - self.peaks[-1][i] for i, j in matches],axis=0)
             
 
         return drift
@@ -265,7 +273,10 @@ class PeakFinder(Browser):
     
     def apply_peaks(self):
         if not self.data._stack:
-            self.result = self.peaks[0]
+            dims = self.data.images.ndim - 2
+            N = len(self.peaks[0])
+            
+            self.result = self.peaks[0].reshape(((N,) + (1,) * dims + (2,)))
             self.close()
 
         
@@ -303,7 +314,7 @@ class PeakFinder(Browser):
 
         # Shift all
         if event.button == 3:
-            self._starting_pos: np.ndarray | None = np.array([int(event.ydata), int(event.xdata)])
+            self._starting_pos: np.ndarray | None = np.array([event.ydata, event.xdata])
 
         if distances[min_idx] < 5:  # threshold for picking a point
             if event.button == 2:
@@ -315,7 +326,7 @@ class PeakFinder(Browser):
             
         
         if distances[min_idx] > 20 and event.button == 1:
-            self.peaks[-1] = np.vstack([self.peaks[-1], [int(event.ydata), int(event.xdata)]])
+            self.peaks[-1] = np.vstack([self.peaks[-1], [event.ydata, event.xdata]])
             self.update_peaks()
             self._dragging_index = -1
         
@@ -323,17 +334,18 @@ class PeakFinder(Browser):
 
         
     def on_motion(self, event):
-        if self._dragging_index is not None and event.button == 1:
-            self.peaks[-1][self._dragging_index] = [int(event.ydata), int(event.xdata)]
-            self.update_peaks()
-        if event.button == 3 and self._starting_pos is not None:
-            self.sc.set_offsets(self.peaks[-1][:,::-1] + np.array([int(event.xdata), int(event.ydata)]) - self._starting_pos[::-1])
-            self.canvas.draw_idle()
-        
+        if event.xdata is not None and event.ydata is not None:
+            if self._dragging_index is not None and event.button == 1:
+                self.peaks[-1][self._dragging_index] = [event.ydata, event.xdata]
+                self.update_peaks()
+            if event.button == 3 and self._starting_pos is not None:
+                self.sc.set_offsets(self.peaks[-1][:,::-1] + np.array([event.xdata, event.ydata]) - self._starting_pos[::-1])
+                self.canvas.draw_idle()
+            
     
     def on_release(self, event):
         if event.button == 3:
-            self.peaks[-1] = self.peaks[-1] + np.array([int(event.ydata), int(event.xdata)]) - self._starting_pos
+            self.peaks[-1] = self.peaks[-1] + np.array([event.ydata, event.xdata]) - self._starting_pos
             self.update_peaks()
             self._starting_pos = None
         if event.button == 1:
@@ -373,10 +385,11 @@ class PeakEditor(Browser):
 
     def update_peaks(self):
         frame = [slider.value()-1 for slider in self.sliders]
-        if len(self.peaks_fromfile[:,frame[0], frame[1], 0]) == 0:
+        peaks = self.peaks_fromfile[*self.idx(frame)]
+        if len(peaks) == 0:
             offsets = np.empty((0, 2))
         else:
-            offsets = self.peaks_fromfile[:,frame[0], frame[1], 0].reshape(-1, 2)[:, [1, 0]]
+            offsets = peaks[...,::-1]
         
         self.sc.set_offsets(offsets)
         self.canvas.draw_idle()
@@ -416,7 +429,8 @@ class PeakEditor(Browser):
 
         # Shift all
         if event.button == 3:
-            self._starting_pos: np.ndarray | None = np.array([int(event.ydata), int(event.xdata)])
+            self._starting_pos: np.ndarray | None = np.array([event.ydata, event.xdata])
+            self.lastevent = self._starting_pos
 
         if distances[min_idx] < 5:  # threshold for picking a point
             if event.button == 2:
@@ -424,32 +438,63 @@ class PeakEditor(Browser):
                 self.update_peaks()
             if event.button == 1:
                 self._dragging_index = min_idx
+                self._starting_pos: np.ndarray | None = np.array([event.ydata, event.xdata])
+                self.lastevent = self._starting_pos
+
         
         
-        # if distances[min_idx] > 10 and event.button == 1:
-        #     self.peaks[-1] = np.vstack([self.peaks[-1], [int(event.ydata), int(event.xdata)]])
-        #     self.update_peaks()
-        #     self._dragging_index = -1
+        if distances[min_idx] > 10 and event.button == 1:
+            frame = [slider.value()-1 for slider in self.sliders]
+            
+            ref = self.peaks_fromfile[self.idx(frame)]
+
+            idx = (slice(None),) + (None,)*len(frame) + (slice(None),)
+            d = np.mean((self.peaks_fromfile - ref[idx]),axis=0)
+
+            click = np.array([event.ydata, event.xdata])
+
+            new_peak = (click[(None,)*len(frame) + (slice(None),)] + d)[None,...]
+
+            self.peaks_fromfile = np.concatenate([self.peaks_fromfile, new_peak], axis=0)
+            self.update_peaks()
 
     
     def on_motion(self, event):
-        frame = [slider.value()-1 for slider in self.sliders]
-        if self._dragging_index is not None and event.button == 1:
-            self.peaks_fromfile[self._dragging_index, frame[0], frame[1], 0] = [int(event.ydata), int(event.xdata)]
-            self.update_peaks()
-        if event.button == 3 and self._starting_pos is not None:
-            self.sc.set_offsets(self.peaks_fromfile[:, frame[0], frame[1], 0, ::-1] + (np.array([int(event.xdata), int(event.ydata)]) - self._starting_pos[::-1])/self.sensitivity)
-            self.canvas.draw_idle()
-        
-    
+        if event.xdata is not None and event.ydata is not None:
+            self.lastevent = np.array([event.ydata, event.xdata])
+            frame = [slider.value()-1 for slider in self.sliders]
+            if self._dragging_index is not None and event.button == 1:
+                self.sc.set_offsets(self.peaks_fromfile[*self.idx(frame,peakidx=self._dragging_index),::-1] + (self.lastevent[::-1] - self._starting_pos[::-1])/self.sensitivity)
+                self.canvas.draw_idle()
+            if event.button == 3 and self._starting_pos is not None:
+                self.sc.set_offsets(self.peaks_fromfile[*self.idx(frame),::-1] + (self.lastevent[::-1] - self._starting_pos[::-1])/self.sensitivity)
+                self.canvas.draw_idle()
+
     def on_release(self, event):
         frame = [slider.value()-1 for slider in self.sliders]
-        if event.button == 3:
-            self.peaks_fromfile[:, frame[0], frame[1],0] += (np.array([int(event.ydata), int(event.xdata)]) - self._starting_pos)/self.sensitivity
-            self.update_peaks()
-            self._starting_pos = None
-        if event.button == 1:
-            self._dragging_index = None
+        if event.xdata is not None and event.ydata is not None:
+            self.lastevent = np.array([event.ydata, event.xdata])
+        
+        if self._starting_pos is not None:
+            if event.button == 3:
+                # Move all points
+                if len(frame) == 1:
+                    # This frame only
+                    self.peaks_fromfile[self.idx(frame)] += (self.lastevent - self._starting_pos)/self.sensitivity
+                elif len(frame) == 2:
+                    # all in second axis onward
+                    self.peaks_fromfile[self.idx([frame[0], slice(frame[1],None)])] += (self.lastevent - self._starting_pos)/self.sensitivity
+                elif len(frame) == 3:
+                    # all in second axis onward
+                    self.peaks_fromfile[self.idx([frame[0], slice(frame[1],None), slice(None)])] += (self.lastevent - self._starting_pos)/self.sensitivity
+                self.update_peaks()
+                self._starting_pos = None
+            if event.button == 1 and self._dragging_index is not None:
+                # Move all of idx peakidx
+                self.peaks_fromfile[self.idx((slice(None),)*len(frame),peakidx=self._dragging_index)] += (self.lastevent - self._starting_pos)/self.sensitivity
+                self.update_peaks()
+                self._dragging_index = None
+                self._starting_pos = None
 
 
 
