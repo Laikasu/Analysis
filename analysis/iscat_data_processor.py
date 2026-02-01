@@ -139,8 +139,6 @@ class ISCATDataProcessor():
 
     def peaks(self):
         peaks = self.peak_positions().astype(np.uint16)
-        
-        # Gaussian blur makes less sensitive to exact pixel, sort of averages around the peak
         shape = self.images.shape[:-2]
         idx = np.ogrid[*tuple(slice(0, s) for s in shape)]
         return self.images[*idx, peaks[...,0], peaks[...,1]]
